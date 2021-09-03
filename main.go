@@ -12,6 +12,7 @@ import(
 	"flag"
 	"log"
 	"sync"
+	"time"
 )
 
 var (
@@ -60,10 +61,11 @@ func main() {
 	flag.Parse()
 	log.Printf("sync dir %s",*siteDir)
 
-	queue := make(chan SyncFile,*threads)
-	//mutex = &sync.Mutex{}
 	sigs := make(chan os.Signal, 1)
     done := make(chan bool, 1)
+	queue := make(chan SyncFile,*threads)
+	workLoad := make([]SyncFile,0)
+
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
@@ -77,33 +79,24 @@ func main() {
 		log.Printf("go workerId %d",workerId)
 		go SyncWorker(workerId,&wg,queue)
 	}
-
+	
 	for {
-		ReadDir(*siteDir,queue,&wg,done)
-
-		select {
-
-			case  
-
-
+		ReadDir(*siteDir,&workLoad)
+		for _,file := range workLoad {
+			select {
+				case <-done:
+					os.Exit(0)
+				default:
+					queue<-file		
+			}
 		}
-
-		wg.Wait()
 	}
 }
 
-func HandleSig(done chan bool,queue chan SyncFile, wg *sync.WaitGroup) {
-	select {
-		case <-done:
-			close(queue)
-			wg.Wait()
-			os.Exit(0)
-		default:
-			return
-	}
-}
-
-func ReadDir(siteDir string,queue chan SyncFile,wg *sync.WaitGroup,done chan bool) {
+/**
+ * parse working dir recursive and push files to []string
+ */
+func ReadDir(siteDir string,workLoad *[]SyncFile)  {
 
 	dir, err := os.ReadDir(siteDir)
 	if err != nil {
@@ -113,11 +106,9 @@ func ReadDir(siteDir string,queue chan SyncFile,wg *sync.WaitGroup,done chan boo
 
 	for _,file := range dir {
 
-		HandleSig(done,queue,wg)
-
 		abs := filepath.Join(siteDir, file.Name())
 		if file.IsDir() == true {
-			ReadDir(abs,queue,wg,done)
+			ReadDir(abs, workLoad)
 			continue
 		}
 		fileStruct,err := GetFileStruct(file,abs)
@@ -126,18 +117,13 @@ func ReadDir(siteDir string,queue chan SyncFile,wg *sync.WaitGroup,done chan boo
 			continue
 		}
 
-		queue<-fileStruct
+		*workLoad = append(*workLoad,fileStruct)
 	}
 }
 
 func SyncWorker(id int,wg *sync.WaitGroup,queue chan SyncFile) {
-	for {
-		file,more := <-queue
-		if (more) {
-			log.Printf("Worker ID %d proc %+v\n",id,file)
-		} else {
-			wg.Done()
-			return
-		}
+	for file := range queue {
+		log.Printf("Worker ID %d proc %+v\n",id,file)
+		time.Sleep(time.Second*3)
 	}
 }
