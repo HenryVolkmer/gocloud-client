@@ -1,18 +1,13 @@
 package main
 
 import(
-	"errors"
 	"os/signal"
 	"os"
 	"syscall"
-	"io"
 	"path/filepath"
-	"encoding/hex"
-	"crypto/sha1"
 	"flag"
 	"log"
 	"sync"
-	"time"
 )
 
 var (
@@ -20,51 +15,18 @@ var (
 	wg sync.WaitGroup
 )
 
-type SyncFile struct {
-	Name string
-	Path string
-	sha1 string
-}
-
-/**
- * Generate a File Struct by os.DirEntry
- */
-func GetFileStruct(entry os.DirEntry,absDir string) (SyncFile,error) {
-
-	finfo,err := entry.Info()
-	if err != nil {
-		panic("Could not get Fileinfo")
-	}
-
-	file, err := os.Open(absDir)
-	defer file.Close()
-
-	hash := sha1.New()
-
-	if _, err := io.Copy(hash, file); err != nil {
-		return SyncFile{}, errors.New("Could not generate sha1 hash for file " + finfo.Name())
-	}	
-	sf := SyncFile{}
-	//Get the 20 bytes hash
-	hashInBytes := hash.Sum(nil)[:20]
-	sf.sha1 = hex.EncodeToString(hashInBytes)
-	sf.Name = finfo.Name()
-	sf.Path = absDir
-
-	return sf,nil
-}
-
 func main() {
 
-	siteDir = flag.String("dir", "", "the directory to sync with server")
-	threads := flag.Int("threads", 5, "the number of threads to use")
+	// if no config was provided as flag, try to locate a config in users home
+	siteDir := flag.String("site", "", "path to the configfile")
+	threads := flag.Int("threads",5,"Number of threads")
 	flag.Parse()
 	log.Printf("sync dir %s",*siteDir)
 
 	sigs := make(chan os.Signal, 1)
     done := make(chan bool, 1)
-	queue := make(chan SyncFile,*threads)
-	workLoad := make([]SyncFile,0)
+	queue := make(chan SyncableFile,*threads)
+	workLoad := make([]SyncableFile,0)
 
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
@@ -76,8 +38,12 @@ func main() {
 
 	for workerId := 0;workerId < *threads;workerId++ {
 		wg.Add(1)
-		log.Printf("go workerId %d",workerId)
-		go SyncWorker(workerId,&wg,queue)
+		go func (id int,wg *sync.WaitGroup,queue chan SyncableFile) {
+			for file := range queue {
+				procSyncableFile(&file)
+			}
+			wg.Done()
+		}(workerId,&wg,queue)
 	}
 	
 	for {
@@ -85,6 +51,9 @@ func main() {
 		for _,file := range workLoad {
 			select {
 				case <-done:
+					log.Println("Exiting, pleae wait ...")
+					close(queue)
+					wg.Wait()
 					os.Exit(0)
 				default:
 					queue<-file		
@@ -96,9 +65,9 @@ func main() {
 /**
  * parse working dir recursive and push files to []string
  */
-func ReadDir(siteDir string,workLoad *[]SyncFile)  {
+func ReadDir(siteDir string,workLoad *[]SyncableFile)  {
 
-	dir, err := os.ReadDir(siteDir)
+	dir, err := os.ReadDir(siteDir)	
 	if err != nil {
 		log.Printf("Dir not statable: %s",dir)
 		panic("Could not read dir")
@@ -111,19 +80,12 @@ func ReadDir(siteDir string,workLoad *[]SyncFile)  {
 			ReadDir(abs, workLoad)
 			continue
 		}
-		fileStruct,err := GetFileStruct(file,abs)
+		fileStruct,err := GetSyncableFile(file,abs)
 
 		if err != nil {
 			continue
 		}
 
 		*workLoad = append(*workLoad,fileStruct)
-	}
-}
-
-func SyncWorker(id int,wg *sync.WaitGroup,queue chan SyncFile) {
-	for file := range queue {
-		log.Printf("Worker ID %d proc %+v\n",id,file)
-		time.Sleep(time.Second*3)
 	}
 }
