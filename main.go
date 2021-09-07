@@ -8,6 +8,7 @@ import(
 	"flag"
 	"log"
 	"sync"
+	"github.com/HenryVolkmer/libfilesync"
 )
 
 var (
@@ -25,8 +26,8 @@ func main() {
 
 	sigs := make(chan os.Signal, 1)
     done := make(chan bool, 1)
-	queue := make(chan SyncableFile,*threads)
-	workLoad := make([]SyncableFile,0)
+	queue := make(chan libfilesync.Syncable,*threads)
+	workLoad := make([]libfilesync.Syncable,0)
 
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
@@ -38,9 +39,9 @@ func main() {
 
 	for workerId := 0;workerId < *threads;workerId++ {
 		wg.Add(1)
-		go func (id int,wg *sync.WaitGroup,queue chan SyncableFile) {
+		go func (id int,wg *sync.WaitGroup,queue chan libfilesync.Syncable) {
 			for file := range queue {
-				procSyncableFile(&file)
+				procSyncableFile(file)
 			}
 			wg.Done()
 		}(workerId,&wg,queue)
@@ -65,7 +66,7 @@ func main() {
 /**
  * parse working dir recursive and push files to []string
  */
-func ReadDir(siteDir string,workLoad *[]SyncableFile)  {
+func ReadDir(siteDir string,workLoad *[]libfilesync.Syncable)  {
 
 	dir, err := os.ReadDir(siteDir)	
 	if err != nil {
@@ -80,7 +81,7 @@ func ReadDir(siteDir string,workLoad *[]SyncableFile)  {
 			ReadDir(abs, workLoad)
 			continue
 		}
-		fileStruct,err := GetSyncableFile(file,abs)
+		fileStruct,err := libfilesync.NewSyncableFile(file,abs)
 
 		if err != nil {
 			continue

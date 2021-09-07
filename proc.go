@@ -2,9 +2,10 @@ package main
 
 import (
 	"log"
+	"github.com/HenryVolkmer/libfilesync"
 )
 
-func procSyncableFile(file *SyncableFile) {
+func procSyncableFile(file libfilesync.Syncable) {
 	log.Printf("proc %+v\n",file)
 }
 
