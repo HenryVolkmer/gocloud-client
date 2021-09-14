@@ -13,17 +13,17 @@ import(
 )
 
 var (
+	// siteDir is the local directory to keep in sync with
+	// the server
 	siteDir *string 
 	wg sync.WaitGroup
 )
 
 func main() {
 
-	// if no config was provided as flag, try to locate a config in users home
-	siteDir := flag.String("site", "", "path to the configfile")
+	siteDir := flag.String("site", "", "path to the dir to keep in sync with the server")
 	threads := flag.Int("threads",5,"Number of threads")
 	flag.Parse()
-	log.Printf("sync dir %s",*siteDir)
 
 	sigs := make(chan os.Signal, 1)
     done := make(chan bool, 1)
@@ -38,7 +38,8 @@ func main() {
 	}
 	defer watcher.Close()
 
-
+	// main loop
+	// track file changes in siteDir and its subfolders
 	go func() {
 		for {
 			select {
@@ -50,9 +51,42 @@ func main() {
 				if !ok {
 					return
 				}
-				log.Println("event:", event)
-				if event.Op & fsnotify.Write == fsnotify.Write {
+
+				abs := filepath.Join(*siteDir, event.Name)
+		
+				if event.Op&fsnotify.Remove == fsnotify.Remove {
+					log.Println("removed file:", event.Name)
+					deleteFile(abs)
+					return
+				}
+
+				// stat file and check if dir or file
+				file, err := os.Open(abs)
+				if (err != nil) {
+					panic("could not open file for watching")
+				}
+				finfo,err := file.Stat()
+
+				
+				if event.Op&fsnotify.Write == fsnotify.Write {
 					log.Println("modified file:", event.Name)
+				}
+				if event.Op&fsnotify.Create == fsnotify.Create {
+
+					log.Println("Created file:", event.Name)	
+					if (finfo.IsDir()) {
+						log.Println("added for watchcing:", event.Name)	
+						watcher.Add(abs)
+					} else {
+						fileStruct,err := libfilesync.NewSyncableFile(abs,libfilesync.CHECK)
+						if err != nil {
+							panic("could not create fileStruct by FileInfo")
+						}
+						queue<-fileStruct
+					}
+				}
+				if event.Op&fsnotify.Rename == fsnotify.Rename {
+					log.Println("Renamed file:", event.Name)
 				}
 			case err, ok := <-watcher.Errors:
 				if !ok {
@@ -73,12 +107,12 @@ func main() {
     // workers syncing Files with Server
 	for workerId := 0;workerId < *threads;workerId++ {
 		wg.Add(1)
-		go func (id int,wg *sync.WaitGroup,queue chan libfilesync.Syncable) {
+		go func () {
 			for file := range queue {
 				procSyncableFile(file)
 			}
 			wg.Done()
-		}(workerId,&wg,queue)
+		}()
 	}
 	
 	// scan siteDir on startup
@@ -128,7 +162,7 @@ func ReadDir(siteDir string,workLoad *[]libfilesync.Syncable,watcher *fsnotify.W
 			ReadDir(abs, workLoad, watcher)
 			continue
 		}
-		fileStruct,err := libfilesync.NewSyncableFile(file,abs)
+		fileStruct,err := libfilesync.NewSyncableFile(abs,libfilesync.CHECK)
 
 		if err != nil {
 			continue
