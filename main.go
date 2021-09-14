@@ -9,6 +9,7 @@ import(
 	"log"
 	"sync"
 	"github.com/HenryVolkmer/libfilesync"
+	"github.com/fsnotify/fsnotify"
 )
 
 var (
@@ -31,12 +32,45 @@ func main() {
 
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		panic(err)
+	}
+	defer watcher.Close()
+
+
+	go func() {
+		for {
+			select {
+
+			case <-done:
+				return
+
+			case event, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+				log.Println("event:", event)
+				if event.Op & fsnotify.Write == fsnotify.Write {
+					log.Println("modified file:", event.Name)
+				}
+			case err, ok := <-watcher.Errors:
+				if !ok {
+					return
+				}
+				log.Println("error:", err)
+			}
+		}
+	}()
+
+	// listener for signals
 	go func() {
         sig := <-sigs
         log.Println(sig)
         done <- true
     }()
 
+    // workers syncing Files with Server
 	for workerId := 0;workerId < *threads;workerId++ {
 		wg.Add(1)
 		go func (id int,wg *sync.WaitGroup,queue chan libfilesync.Syncable) {
@@ -47,26 +81,37 @@ func main() {
 		}(workerId,&wg,queue)
 	}
 	
-	for {
-		ReadDir(*siteDir,&workLoad)
-		for _,file := range workLoad {
-			select {
-				case <-done:
-					log.Println("Exiting, pleae wait ...")
-					close(queue)
-					wg.Wait()
-					os.Exit(0)
-				default:
-					queue<-file		
-			}
+	// scan siteDir on startup
+	// this subscribes all Directorys recursive
+	// to fsnotify and put all Files to workLoad
+	ReadDir(*siteDir,&workLoad,watcher)
+
+	// enqueue all Files
+	// the workers will check for modifications
+	// an performs the sync with the Server
+	for _,file := range workLoad {
+		select {
+			case <-done:
+				log.Println("Exiting, waiting for workers to finish ...")
+				close(queue)
+				wg.Wait()
+				//os.Exit(0)
+				break
+			default:
+				queue<-file		
 		}
 	}
+
+	// run till done
+	<-done
+	os.Exit(0)
 }
 
 /**
  * parse working dir recursive and push files to []string
+ * Directorys will be subscribed to fsnotify
  */
-func ReadDir(siteDir string,workLoad *[]libfilesync.Syncable)  {
+func ReadDir(siteDir string,workLoad *[]libfilesync.Syncable,watcher *fsnotify.Watcher)  {
 
 	dir, err := os.ReadDir(siteDir)	
 	if err != nil {
@@ -74,11 +119,13 @@ func ReadDir(siteDir string,workLoad *[]libfilesync.Syncable)  {
 		panic("Could not read dir")
 	}
 
+	watcher.Add(siteDir)
+
 	for _,file := range dir {
 
 		abs := filepath.Join(siteDir, file.Name())
 		if file.IsDir() == true {
-			ReadDir(abs, workLoad)
+			ReadDir(abs, workLoad, watcher)
 			continue
 		}
 		fileStruct,err := libfilesync.NewSyncableFile(file,abs)
